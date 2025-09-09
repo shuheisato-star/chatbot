@@ -2,15 +2,15 @@ import streamlit as st
 import random
 import time
 
-# PDF抽出用
+# PDF テキスト抽出用
 try:
     import fitz  # PyMuPDF
     SUPPORT_PDF = True
 except ImportError:
     SUPPORT_PDF = False
 
-# 猫画像: 添付画像（ローカル保存 or Web公開URLを推奨）
-CAT_IMAGE_PATH = "cat_image2.png"  # 添付画像を同じディレクトリに保存してください
+# 猫画像: 添付された画像ファイル名（同じディレクトリに保存してください）
+CAT_IMAGE_PATH = "cat_image2.png"  # ← ここは画像ファイル名そのまま
 
 GOALS = [
     "人材",
@@ -33,7 +33,8 @@ def neko_speak(text, mode="normal"):
         return f"{text} ……だにゃ。"
 
 def extract_text(file):
-    if SUPPORT_PDF and file.name.endswith(".pdf"):
+    # PDFならテキスト抽出、TXTならデコード
+    if SUPPORT_PDF and file.name.lower().endswith(".pdf"):
         doc = fitz.open(stream=file.read(), filetype="pdf")
         text = ""
         for page in doc:
@@ -43,24 +44,26 @@ def extract_text(file):
         return file.read().decode("utf-8")
 
 st.set_page_config(page_title="猫キャラのドキュメントチャットボット", page_icon="🐾")
+
 st.markdown(
     "<h1 style='text-align: center;'>🐾 猫キャラのドキュメントチャットボット</h1>",
     unsafe_allow_html=True
 )
-st.markdown(
-    f"<div style='text-align:center'><img src='data:image/png;base64,{st.image(CAT_IMAGE_PATH, use_column_width=False, output_format='auto', clamp=True).image_to_bytes().decode() if hasattr(st, 'image_to_bytes') else ''}' width='160'></div>",
-    unsafe_allow_html=True
-)
+# 猫画像を表示（ファイル名が正しく同じディレクトリにあることを確認）
+st.image(CAT_IMAGE_PATH, width=160)
+
 st.markdown(
     "<div style='text-align:center;font-size:20px;'>猫と一緒にドキュメントを探検しよう！</div>",
     unsafe_allow_html=True
 )
 
+# APIキー取得
 api_key = st.secrets.get("GEMINI_API_KEY", "")
 if not api_key:
     st.warning("APIキーが設定されていません。`.streamlit/secrets.toml` に `GEMINI_API_KEY` を記載してください。")
     st.stop()
 
+# Gemini APIモデル用意
 try:
     import google.generativeai as genai
     genai.configure(api_key=api_key)
@@ -78,10 +81,10 @@ if uploaded_file:
     doc_text = extract_text(uploaded_file)
     st.session_state["doc_text"] = doc_text
     st.markdown(
-        f"<div style='text-align:center;font-size:24px;'>毛糸玉（ドキュメント）をゲット！</div>",
+        "<div style='text-align:center;font-size:24px;'>毛糸玉（ドキュメント）をゲット！</div>",
         unsafe_allow_html=True
     )
-    # Geminiによる要約
+    # Gemini要約
     if GEMINI_AVAILABLE:
         try:
             prompt = f"このドキュメントの要約を猫語で100文字以内で書いてください。"
@@ -99,10 +102,7 @@ else:
 if "last_action_time" not in st.session_state:
     st.session_state["last_action_time"] = time.time()
 if time.time() - st.session_state["last_action_time"] > 120:
-    st.markdown(
-        f"<div style='text-align:center'><img src='{CAT_IMAGE_PATH}' width='160'></div>",
-        unsafe_allow_html=True
-    )
+    st.image(CAT_IMAGE_PATH, width=160)
     st.info(neko_speak("そろそろ遊ぼうにゃ！", "play"))
 
 st.markdown("---")
@@ -114,11 +114,8 @@ user_question = st.text_input("猫に聞きたいことを入力してにゃ", k
 if user_question:
     st.session_state["last_action_time"] = time.time()
     st.session_state["chat_history"].append(("user", user_question))
-    st.markdown(
-        f"<div style='text-align:center'><img src='{CAT_IMAGE_PATH}' width='160'></div>",
-        unsafe_allow_html=True
-    )
-    # Geminiによる回答生成
+    st.image(CAT_IMAGE_PATH, width=160)
+    # Gemini回答生成
     if GEMINI_AVAILABLE:
         try:
             prompt = f"""
@@ -139,10 +136,7 @@ if user_question:
         else:
             answer = neko_speak("ごめんにゃ、ちょっと分からないにゃ…別の聞き方をしてみてほしいにゃ。", "confused")
     st.session_state["chat_history"].append(("cat", answer))
-    st.markdown(
-        f"<div style='text-align:center'><img src='{CAT_IMAGE_PATH}' width='160'></div>",
-        unsafe_allow_html=True
-    )
+    st.image(CAT_IMAGE_PATH, width=160)
     st.markdown(f"<div style='background:#fff7e6;padding:10px;border-radius:10px'>{answer}</div>", unsafe_allow_html=True)
 
 if st.session_state["chat_history"]:
@@ -184,17 +178,10 @@ if "quiz" in st.session_state and st.session_state["quiz"]:
 if "quiz_selected" in st.session_state and st.session_state["quiz_selected"]:
     quiz_data = st.session_state["quiz"]
     selected = st.session_state["quiz_selected"]
+    st.image(CAT_IMAGE_PATH, width=160)
     if selected == quiz_data["answer"]:
-        st.markdown(
-            f"<div style='text-align:center'><img src='{CAT_IMAGE_PATH}' width='160'></div>",
-            unsafe_allow_html=True
-        )
         st.success(neko_speak("正解だにゃ！お見事にゃ！", "happy"))
     else:
-        st.markdown(
-            f"<div style='text-align:center'><img src='{CAT_IMAGE_PATH}' width='160'></div>",
-            unsafe_allow_html=True
-        )
         st.error(neko_speak(f"残念…正解は「{quiz_data['answer']}」だったにゃ。", "confused"))
     st.info(neko_speak("AI戦略2022の5つの目標は「人材」「産業競争力」「技術体系」「国際」「差し迫った危機への対処」だにゃ。", "normal"))
     st.session_state["quiz"] = None
