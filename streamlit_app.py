@@ -15,7 +15,7 @@ st.write(
     "また、要約・根拠表示・クイズ（選択式正誤問題）機能も利用できます。"
 )
 
-api_key = st.secrets.get("GEMINI_API_KEY", "")
+api_key = st.secrets.get("GEMINI_API_KEY", "AIzaSyBkidm9uHDeyNq8IqBmJvZOgi6vz4DrSn8")
 if not api_key:
     st.info(
         "続行するには .streamlit/secrets.toml に GEMINI_API_KEY を設定してください。\n"
