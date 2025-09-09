@@ -1,177 +1,174 @@
 import streamlit as st
-import google.generativeai as genai
+import random
+import time
 
-# fitz(Pymupdf)が使えるか判定
-try:
-    import fitz
-    SUPPORT_PDF = True
-except ImportError:
-    SUPPORT_PDF = False
+# 猫キャラクター画像URLサンプル（SVG/PNG。好みに合わせて差し替え可）
+CAT_ICONS = {
+    "normal": "https://raw.githubusercontent.com/shuheisato-star/chatbot/main/assets/cat_normal.png",        # 通常
+    "thinking": "https://raw.githubusercontent.com/shuheisato-star/chatbot/main/assets/cat_thinking.png",    # 集中
+    "happy": "https://raw.githubusercontent.com/shuheisato-star/chatbot/main/assets/cat_happy.png",          # ひらめき
+    "confused": "https://raw.githubusercontent.com/shuheisato-star/chatbot/main/assets/cat_confused.png",    # 困惑
+    "play": "https://raw.githubusercontent.com/shuheisato-star/chatbot/main/assets/cat_play.png",            # 遊んでほしい
+    "yarn": "https://raw.githubusercontent.com/shuheisato-star/chatbot/main/assets/yarn.png",                # 毛糸玉
+}
 
-st.title("💬 ドキュメント連携型 Chatbot (Gemini 2.5 Flash 日本語対応)")
+# 戦略目標リスト
+GOALS = [
+    "人材",
+    "産業競争力",
+    "技術体系",
+    "国際",
+    "差し迫った危機への対処"
+]
 
-st.write(
-    "ドキュメントをアップロードして、内容に関する質問ができます。"
-    "また、要約・根拠表示・クイズ（選択式正誤問題）機能も利用できます。"
+# --- 猫語変換ヘルパー ---
+def neko_speak(text, mode="normal"):
+    if mode == "happy":
+        return f"にゃるほど！{text} ……だにゃ！"
+    elif mode == "confused":
+        return f"うーん、{text} ……ちょっと難しいにゃ。"
+    elif mode == "thinking":
+        return f"ちょっと待ってにゃ。{text}"
+    elif mode == "play":
+        return f"そろそろ遊びたいにゃ〜！{text}"
+    else:
+        return f"{text} ……だにゃ。"
+
+# --- UIヘッダー ---
+st.markdown(
+    "<h1 style='text-align: center;'>🐾 猫キャラのドキュメントチャットボット</h1>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    f"<div style='text-align:center'><img src='{CAT_ICONS['normal']}' width='120'></div>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    "<div style='text-align:center;font-size:20px;'>猫と一緒にドキュメントを探検しよう！</div>",
+    unsafe_allow_html=True
 )
 
-api_key = st.secrets.get("GEMINI_API_KEY", "AIzaSyBkidm9uHDeyNq8IqBmJvZOgi6vz4DrSn8")
-if not api_key:
-    st.info(
-        "続行するには .streamlit/secrets.toml に GEMINI_API_KEY を設定してください。\n"
-        "例:\n[GEMINI_API_KEY]\nGEMINI_API_KEY = \"your-api-key\"",
-        icon="🗝️"
-    )
-    st.stop()
-
-genai.configure(api_key=api_key)
-model = genai.GenerativeModel("gemini-1.5-flash")
-
-def extract_text(file):
-    if SUPPORT_PDF and file.name.endswith(".pdf"):
-        doc = fitz.open(stream=file.read(), filetype="pdf")
-        text = ""
-        for page in doc:
-            text += page.get_text()
-        return text
-    else:
-        return file.read().decode("utf-8")
-
-def get_summary_and_highlights(text):
-    prompt = f"""
-    以下はドキュメントです。内容の要約（300文字以内）と、重要ポイント・ハイライト（箇条書き）を日本語で出力してください。
-
-    ドキュメント:
-    {text}
-    """
-    response = model.generate_content(prompt)
-    return response.candidates[0].content.parts[0].text
-
-def get_answer_and_highlight(text, question):
-    prompt = f"""
-    以下のドキュメント内容に基づき、質問に日本語で答えてください。
-    また、回答の根拠となる文（最大3つ）をドキュメントから抜き出し「根拠」として明示してください。
-
-    ドキュメント:
-    {text}
-
-    質問:
-    {question}
-    """
-    response = model.generate_content(prompt)
-    answer = response.candidates[0].content.parts[0].text
-    return answer
-
-def generate_choice_quiz(text):
-    prompt = f"""
-    以下のドキュメントから「正誤問題（選択肢付き）」を1問、日本語で作成してください。
-    必ず以下の形式で出力してください：
-
-    問題: <問題文>
-    選択肢:
-    1. <選択肢1>
-    2. <選択肢2>
-    3. <選択肢3>
-    4. <選択肢4>
-    正答番号: <正答の番号>（例：2）
-    解説: <解説>
-
-    ドキュメント:
-    {text}
-    """
-    response = model.generate_content(prompt)
-    output = response.candidates[0].content.parts[0].text
-
-    # 分割処理
-    question, choices, correct_num, explanation = "", [], None, ""
-    for line in output.splitlines():
-        line = line.strip()
-        if line.startswith("問題:"):
-            question = line.replace("問題:", "").strip()
-        elif line.startswith("選択肢:"):
-            continue
-        elif any(line.startswith(f"{i}.") for i in range(1, 10)):
-            choices.append(line[line.find(".")+1:].strip())
-        elif line.startswith("正答番号:"):
-            try:
-                correct_num = int(line.replace("正答番号:", "").strip())
-            except ValueError:
-                correct_num = None
-        elif line.startswith("解説:"):
-            explanation = line.replace("解説:", "").strip()
-    return question, choices, correct_num, explanation
-
-# ドキュメントアップロード
-file_types = ["txt"]
-if SUPPORT_PDF:
-    file_types.insert(0, "pdf")
-
-uploaded_file = st.file_uploader(f"ドキュメントをアップロード（{'/'.join(file_types).upper()}）", type=file_types)
+# --- ドキュメントアップロード ---
+st.subheader("毛糸玉（ドキュメント）をアップロードしてにゃ")
+uploaded_file = st.file_uploader("TXTファイルのみ対応（PDFは別途可）", type=["txt"])
 if uploaded_file:
-    doc_text = extract_text(uploaded_file)
+    doc_text = uploaded_file.read().decode("utf-8")
     st.session_state["doc_text"] = doc_text
-    summary_highlights = get_summary_and_highlights(doc_text)
-    st.subheader("ドキュメント要約 ＆ ハイライト")
-    st.markdown(summary_highlights)
+    st.markdown(
+        f"<div style='text-align:center'><img src='{CAT_ICONS['yarn']}' width='60'> 毛糸玉（ドキュメント）をゲット！</div>",
+        unsafe_allow_html=True
+    )
+    # 要約生成（簡易：先頭150文字＋末尾50文字）
+    summary = doc_text[:150] + "..." + doc_text[-50:]
+    st.markdown(f"<div style='background:#f4f0e6;padding:10px;border-radius:10px'><b>猫のひとこと要約:</b> <br>{neko_speak(summary, 'happy')}</div>", unsafe_allow_html=True)
 else:
-    st.info(f"まずドキュメントをアップロードしてください。対応形式：{'/'.join(file_types).upper()}")
+    st.info("まず毛糸玉（ドキュメント）をアップロードしてにゃ。")
     st.stop()
 
-# チャット履歴初期化
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "user", "content": "今後の返答はすべて日本語でお願いします。"}
-    ]
-if "quiz_score" not in st.session_state:
-    st.session_state.quiz_score = []
-if "last_quiz_data" not in st.session_state:
-    st.session_state.last_quiz_data = None
-if "last_quiz_selected" not in st.session_state:
-    st.session_state.last_quiz_selected = None
+# --- 「遊んでほしい猫」表示（操作がない場合） ---
+if "last_action_time" not in st.session_state:
+    st.session_state["last_action_time"] = time.time()
+if time.time() - st.session_state["last_action_time"] > 120:
+    st.markdown(
+        f"<div style='text-align:center'><img src='{CAT_ICONS['play']}' width='120'></div>",
+        unsafe_allow_html=True
+    )
+    st.info(neko_speak("そろそろ遊ぼうにゃ！", "play"))
 
-# これまでのメッセージ表示
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# --- チャットQA ---
+st.markdown("---")
+st.subheader("猫に質問してみよう！")
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
 
-# 質問入力
-with st.expander("ドキュメント内容に質問する"):
-    if prompt := st.chat_input("質問を入力してください"):
-        prompt_with_lang = prompt + "\n日本語で答えてください。"
-        st.session_state.messages.append({"role": "user", "content": prompt_with_lang})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+user_question = st.text_input("猫に聞きたいことを入力してにゃ", key="chat_input")
+if user_question:
+    st.session_state["last_action_time"] = time.time()
+    st.session_state["chat_history"].append(("user", user_question))
+    # 疑似的に猫が「考えている」画像表示
+    st.markdown(
+        f"<div style='text-align:center'><img src='{CAT_ICONS['thinking']}' width='120'></div>",
+        unsafe_allow_html=True
+    )
+    # 回答生成（簡易：ドキュメント本文から関連語を抽出する擬似実装）
+    answer_mode = "happy" if any(word in doc_text for word in user_question.split()) else "confused"
+    if answer_mode == "happy":
+        answer = neko_speak("ドキュメントから見つけたよ！「" + user_question + "」についてはこう書かれてるにゃ：\n\n" + doc_text[:100] + "…", "happy")
+        st.session_state["chat_history"].append(("cat", answer))
+        st.markdown(
+            f"<div style='text-align:center'><img src='{CAT_ICONS['happy']}' width='120'></div>",
+            unsafe_allow_html=True
+        )
+    else:
+        answer = neko_speak("ごめんにゃ、ちょっと分からないにゃ…別の聞き方をしてみてほしいにゃ。", "confused")
+        st.session_state["chat_history"].append(("cat", answer))
+        st.markdown(
+            f"<div style='text-align:center'><img src='{CAT_ICONS['confused']}' width='120'></div>",
+            unsafe_allow_html=True
+        )
+    st.markdown(f"<div style='background:#fff7e6;padding:10px;border-radius:10px'>{answer}</div>", unsafe_allow_html=True)
 
-        response_text = get_answer_and_highlight(st.session_state["doc_text"], prompt_with_lang)
-        with st.chat_message("assistant"):
-            st.markdown(response_text)
-        st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-# 正誤問題クイズ
-with st.expander("ドキュメントで正誤問題クイズに挑戦！"):
-    if st.button("クイズを出題"):
-        question, choices, correct_num, explanation = generate_choice_quiz(st.session_state["doc_text"])
-        st.session_state.last_quiz_data = (question, choices, correct_num, explanation)
-        st.session_state.last_quiz_selected = None
-
-    if st.session_state.last_quiz_data:
-        question, choices, correct_num, explanation = st.session_state.last_quiz_data
-        st.markdown(f"**問題：** {question}")
-        selected_idx = st.selectbox("選択肢を選んでください", options=range(1, len(choices)+1), format_func=lambda x: f"{x}. {choices[x-1]}")
-        if st.button("答え合わせ"):
-            st.session_state.last_quiz_selected = selected_idx
-
-    # 回答後の表示
-    if st.session_state.last_quiz_selected:
-        selected_idx = st.session_state.last_quiz_selected
-        question, choices, correct_num, explanation = st.session_state.last_quiz_data
-        if selected_idx == correct_num:
-            st.success(f"正解！ ({selected_idx}. {choices[selected_idx-1]})")
-            st.session_state.quiz_score.append(1)
+# 履歴表示
+if st.session_state["chat_history"]:
+    st.markdown("---")
+    st.subheader("これまでの猫とのやりとり")
+    for who, msg in st.session_state["chat_history"]:
+        if who == "user":
+            st.markdown(f"<div style='background:#e6f7ff;padding:8px;border-radius:8px'>🧑‍💻 {msg}</div>", unsafe_allow_html=True)
         else:
-            st.error(f"不正解… 正解は {correct_num}. {choices[correct_num-1]} です。")
-            st.session_state.quiz_score.append(0)
-        st.info(f"解説: {explanation}")
-        # クイズデータ消去
-        st.session_state.last_quiz_data = None
-        st.session_state.last_quiz_selected = None
+            st.markdown(f"<div style='background:#fff7e6;padding:8px;border-radius:8px'>🐱 {msg}</div>", unsafe_allow_html=True)
+
+# --- クイズ（戦略目標選択式） ---
+st.markdown("---")
+st.subheader("猫のクイズタイム！")
+if st.button("クイズを出題してにゃ"):
+    # 正解目標をランダム選択
+    correct_goal = random.choice(GOALS)
+    wrong_goals = random.sample([g for g in GOALS if g != correct_goal], 3)
+    options = wrong_goals + [correct_goal]
+    random.shuffle(options)
+    question = f"『{correct_goal}』はAI戦略2022の5つの戦略目標のうちどれにゃ？"
+    # 保持
+    st.session_state["quiz"] = {
+        "question": question,
+        "options": options,
+        "answer": correct_goal
+    }
+    st.session_state["quiz_selected"] = None
+
+# クイズ表示
+if "quiz" in st.session_state and st.session_state["quiz"]:
+    q = st.session_state["quiz"]
+    st.markdown(f"<div style='background:#e6f7ff;padding:8px;border-radius:8px'><b>問題:</b> {q['question']}</div>", unsafe_allow_html=True)
+    selected = st.selectbox("選択肢を選んでにゃ", q["options"], key="quiz_select")
+    if st.button("答え合わせするにゃ"):
+        st.session_state["quiz_selected"] = selected
+
+# クイズ答え合わせ
+if "quiz_selected" in st.session_state and st.session_state["quiz_selected"]:
+    q = st.session_state["quiz"]
+    selected = st.session_state["quiz_selected"]
+    if selected == q["answer"]:
+        st.markdown(
+            f"<div style='text-align:center'><img src='{CAT_ICONS['happy']}' width='120'></div>",
+            unsafe_allow_html=True
+        )
+        st.success(neko_speak("正解だにゃ！お見事にゃ！", "happy"))
+    else:
+        st.markdown(
+            f"<div style='text-align:center'><img src='{CAT_ICONS['confused']}' width='120'></div>",
+            unsafe_allow_html=True
+        )
+        st.error(neko_speak(f"残念…正解は「{q['answer']}」だったにゃ。", "confused"))
+    # 解説
+    st.info(neko_speak("AI戦略2022の5つの目標は「人材」「産業競争力」「技術体系」「国際」「差し迫った危機への対処」だにゃ。", "normal"))
+    # クイズ履歴消去
+    st.session_state["quiz"] = None
+    st.session_state["quiz_selected"] = None
+
+# --- フッター ---
+st.markdown("---")
+st.markdown(
+    "<div style='text-align:center;font-size:13px;color:#888'>Powered by 猫キャラBot 🐾</div>",
+    unsafe_allow_html=True
+)
