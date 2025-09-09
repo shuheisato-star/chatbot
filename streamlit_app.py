@@ -1,34 +1,35 @@
 import streamlit as st
-import google.generativeai as genai
+import os
+import random
+import time
 
-# fitz(Pymupdf)が使えるか判定
+# PDF テキスト抽出用
 try:
-    import fitz
+    import fitz  # PyMuPDF
     SUPPORT_PDF = True
 except ImportError:
     SUPPORT_PDF = False
 
-st.title("💬 ドキュメント連携型 Chatbot (Gemini 2.5 Flash 日本語対応)")
+CAT_IMAGE_PATH = "cat_image2.png"  # 添付画像を同じディレクトリに保存
 
-st.write(
-    "ドキュメントをアップロードして、内容に関する質問ができます。"
-    "また、要約・根拠表示・クイズ（選択式正誤問題）機能も利用できます。"
-)
+GOALS = [
+    "人材", "産業競争力", "技術体系", "国際", "差し迫った危機への対処"
+]
 
-api_key = st.secrets.get("GEMINI_API_KEY", "")
-if not api_key:
-    st.info(
-        "続行するには .streamlit/secrets.toml に GEMINI_API_KEY を設定してください。\n"
-        "例:\n[GEMINI_API_KEY]\nGEMINI_API_KEY = \"your-api-key\"",
-        icon="🗝️"
-    )
-    st.stop()
-
-genai.configure(api_key=api_key)
-model = genai.GenerativeModel("gemini-1.5-flash")
+def neko_speak(text, mode="normal"):
+    if mode == "happy":
+        return f"にゃるほど！{text} ……だにゃ！"
+    elif mode == "confused":
+        return f"うーん、{text} ……ちょっと難しいにゃ。"
+    elif mode == "thinking":
+        return f"ちょっと待ってにゃ。{text}"
+    elif mode == "play":
+        return f"そろそろ遊びたいにゃ〜！{text}"
+    else:
+        return f"{text} ……だにゃ。"
 
 def extract_text(file):
-    if SUPPORT_PDF and file.name.endswith(".pdf"):
+    if SUPPORT_PDF and file.name.lower().endswith(".pdf"):
         doc = fitz.open(stream=file.read(), filetype="pdf")
         text = ""
         for page in doc:
@@ -37,141 +38,217 @@ def extract_text(file):
     else:
         return file.read().decode("utf-8")
 
-def get_summary_and_highlights(text):
-    prompt = f"""
-    以下はドキュメントです。内容の要約（300文字以内）と、重要ポイント・ハイライト（箇条書き）を日本語で出力してください。
-
-    ドキュメント:
-    {text}
+def chapter_and_section(text, answer):
     """
-    response = model.generate_content(prompt)
-    return response.candidates[0].content.parts[0].text
-
-def get_answer_and_highlight(text, question):
-    prompt = f"""
-    以下のドキュメント内容に基づき、質問に日本語で答えてください。
-    また、回答の根拠となる文（最大3つ）をドキュメントから抜き出し「根拠」として明示してください。
-
-    ドキュメント:
-    {text}
-
-    質問:
-    {question}
+    疑似的に章・節を抽出（実際はドキュメントの構造に応じて調整）
+    例: 「第3章」「第5節」などの文を抽出
     """
-    response = model.generate_content(prompt)
-    answer = response.candidates[0].content.parts[0].text
-    return answer
+    import re
 
-def generate_choice_quiz(text):
-    prompt = f"""
-    以下のドキュメントから「正誤問題（選択肢付き）」を1問、日本語で作成してください。
-    必ず以下の形式で出力してください：
+    chapter = re.search(r"(第[0-9一二三四五六七八九十]+章[「」『』\w\s]*)", text)
+    section = re.search(r"(第[0-9一二三四五六七八九十]+節[「」『』\w\s]*)", text)
 
-    問題: <問題文>
-    選択肢:
-    1. <選択肢1>
-    2. <選択肢2>
-    3. <選択肢3>
-    4. <選択肢4>
-    正答番号: <正答の番号>（例：2）
-    解説: <解説>
+    # 章・節が回答に含まれている場合を優先
+    chapter_in_answer = re.search(r"(第[0-9一二三四五六七八九十]+章[「」『』\w\s]*)", answer)
+    section_in_answer = re.search(r"(第[0-9一二三四五六七八九十]+節[「」『』\w\s]*)", answer)
 
-    ドキュメント:
-    {text}
-    """
-    response = model.generate_content(prompt)
-    output = response.candidates[0].content.parts[0].text
+    info = ""
+    if chapter_in_answer:
+        info += chapter_in_answer.group()
+    elif chapter:
+        info += chapter.group()
+    if section_in_answer:
+        if info: info += " "
+        info += section_in_answer.group()
+    elif section:
+        if info: info += " "
+        info += section.group()
+    return info if info else None
 
-    # 分割処理
-    question, choices, correct_num, explanation = "", [], None, ""
-    for line in output.splitlines():
-        line = line.strip()
-        if line.startswith("問題:"):
-            question = line.replace("問題:", "").strip()
-        elif line.startswith("選択肢:"):
-            continue
-        elif any(line.startswith(f"{i}.") for i in range(1, 10)):
-            choices.append(line[line.find(".")+1:].strip())
-        elif line.startswith("正答番号:"):
-            try:
-                correct_num = int(line.replace("正答番号:", "").strip())
-            except ValueError:
-                correct_num = None
-        elif line.startswith("解説:"):
-            explanation = line.replace("解説:", "").strip()
-    return question, choices, correct_num, explanation
+def visualize_knowledge_flow(question, answer, source_info):
+    # テキストベースの「知識系譜」可視化例
+    arrow = "→"
+    blocks = [
+        f"あなたの質問\n【{question}】",
+        arrow,
+        f"猫の回答\n【{answer}】",
+        arrow,
+        f"ドキュメントの出所\n【{source_info}】" if source_info else "ドキュメントの出所\n【該当箇所不明】"
+    ]
+    return "\n\n".join(blocks)
 
-# ドキュメントアップロード
+st.set_page_config(page_title="猫キャラのドキュメントチャットボット", page_icon="🐾")
+st.markdown(
+    "<h1 style='text-align: center;'>🐾 猫キャラのドキュメントチャットボット</h1>",
+    unsafe_allow_html=True
+)
+if os.path.exists(CAT_IMAGE_PATH):
+    st.image(CAT_IMAGE_PATH, width=160)
+else:
+    st.markdown(
+        "<div style='text-align:center;font-size:24px;color:#888'>猫のキャラクター画像（cat_image2.png）がありません</div>",
+        unsafe_allow_html=True
+    )
+
+st.markdown(
+    "<div style='text-align:center;font-size:20px;'>猫と一緒にドキュメントを探検しよう！</div>",
+    unsafe_allow_html=True
+)
+
+api_key = st.secrets.get("GEMINI_API_KEY", "")
+if not api_key:
+    st.warning("APIキーが設定されていません。`.streamlit/secrets.toml` に `GEMINI_API_KEY` を記載してください。")
+    st.stop()
+
+try:
+    import google.generativeai as genai
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    GEMINI_AVAILABLE = True
+except Exception:
+    GEMINI_AVAILABLE = False
+
+st.subheader("毛糸玉（ドキュメント）をアップロードしてにゃ")
 file_types = ["txt"]
 if SUPPORT_PDF:
     file_types.insert(0, "pdf")
-
-uploaded_file = st.file_uploader(f"ドキュメントをアップロード（{'/'.join(file_types).upper()}）", type=file_types)
+uploaded_file = st.file_uploader(f"{'PDF/TXT' if SUPPORT_PDF else 'TXT'}ファイルのみ対応", type=file_types)
 if uploaded_file:
     doc_text = extract_text(uploaded_file)
     st.session_state["doc_text"] = doc_text
-    summary_highlights = get_summary_and_highlights(doc_text)
-    st.subheader("ドキュメント要約 ＆ ハイライト")
-    st.markdown(summary_highlights)
+    st.markdown("<div style='text-align:center;font-size:24px;'>毛糸玉（ドキュメント）をゲット！</div>", unsafe_allow_html=True)
+
+    # Gemini要約
+    if GEMINI_AVAILABLE:
+        try:
+            prompt = f"このドキュメントの要約を猫語で100文字以内で書いてください。"
+            response = model.generate_content(prompt + "\n\n" + doc_text[:2000])
+            summary = response.candidates[0].content.parts[0].text
+        except Exception:
+            summary = doc_text[:150] + "..." + doc_text[-50:]
+    else:
+        summary = doc_text[:150] + "..." + doc_text[-50:]
+    st.markdown(f"<div style='background:#f4f0e6;padding:10px;border-radius:10px'><b>猫のひとこと要約:</b> <br>{neko_speak(summary, 'happy')}</div>", unsafe_allow_html=True)
 else:
-    st.info(f"まずドキュメントをアップロードしてください。対応形式：{'/'.join(file_types).upper()}")
+    st.info("まず毛糸玉（ドキュメント）をアップロードしてにゃ。")
     st.stop()
 
-# チャット履歴初期化
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "user", "content": "今後の返答はすべて日本語でお願いします。"}
-    ]
-if "quiz_score" not in st.session_state:
-    st.session_state.quiz_score = []
-if "last_quiz_data" not in st.session_state:
-    st.session_state.last_quiz_data = None
-if "last_quiz_selected" not in st.session_state:
-    st.session_state.last_quiz_selected = None
+if "last_action_time" not in st.session_state:
+    st.session_state["last_action_time"] = time.time()
+if time.time() - st.session_state["last_action_time"] > 120:
+    if os.path.exists(CAT_IMAGE_PATH):
+        st.image(CAT_IMAGE_PATH, width=160)
+    st.info(neko_speak("そろそろ遊ぼうにゃ！", "play"))
 
-# これまでのメッセージ表示
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+st.markdown("---")
+st.subheader("猫に質問してみよう！")
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
+if "knowledge_flow" not in st.session_state:
+    st.session_state["knowledge_flow"] = []
 
-# 質問入力
-with st.expander("ドキュメント内容に質問する"):
-    if prompt := st.chat_input("質問を入力してください"):
-        prompt_with_lang = prompt + "\n日本語で答えてください。"
-        st.session_state.messages.append({"role": "user", "content": prompt_with_lang})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        response_text = get_answer_and_highlight(st.session_state["doc_text"], prompt_with_lang)
-        with st.chat_message("assistant"):
-            st.markdown(response_text)
-        st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-# 正誤問題クイズ
-with st.expander("ドキュメントで正誤問題クイズに挑戦！"):
-    if st.button("クイズを出題"):
-        question, choices, correct_num, explanation = generate_choice_quiz(st.session_state["doc_text"])
-        st.session_state.last_quiz_data = (question, choices, correct_num, explanation)
-        st.session_state.last_quiz_selected = None
-
-    if st.session_state.last_quiz_data:
-        question, choices, correct_num, explanation = st.session_state.last_quiz_data
-        st.markdown(f"**問題：** {question}")
-        selected_idx = st.selectbox("選択肢を選んでください", options=range(1, len(choices)+1), format_func=lambda x: f"{x}. {choices[x-1]}")
-        if st.button("答え合わせ"):
-            st.session_state.last_quiz_selected = selected_idx
-
-    # 回答後の表示
-    if st.session_state.last_quiz_selected:
-        selected_idx = st.session_state.last_quiz_selected
-        question, choices, correct_num, explanation = st.session_state.last_quiz_data
-        if selected_idx == correct_num:
-            st.success(f"正解！ ({selected_idx}. {choices[selected_idx-1]})")
-            st.session_state.quiz_score.append(1)
+user_question = st.text_input("猫に聞きたいことを入力してにゃ", key="chat_input")
+if user_question:
+    st.session_state["last_action_time"] = time.time()
+    st.session_state["chat_history"].append(("user", user_question))
+    if os.path.exists(CAT_IMAGE_PATH):
+        st.image(CAT_IMAGE_PATH, width=160)
+    # Gemini回答生成＋出所抽出
+    if GEMINI_AVAILABLE:
+        try:
+            prompt = f"""
+            あなたは猫キャラクターです。ユーザーの質問に必ず猫語（語尾に「にゃ」など）で答えてください。回答はドキュメント内容に基づいてください。
+            必ず回答の根拠となる箇所（章や節名など）があれば明記してください。
+            ドキュメント: {st.session_state['doc_text'][:6000]}
+            質問: {user_question}
+            """
+            response = model.generate_content(prompt)
+            answer = response.candidates[0].content.parts[0].text
+            answer_mode = "happy"
+        except Exception:
+            answer = neko_speak("APIリソース制限またはエラーが発生したにゃ。時間を空けて再度お試しくださいにゃ。", "confused")
+            answer_mode = "confused"
+    else:
+        answer_mode = "happy" if any(word in st.session_state["doc_text"] for word in user_question.split()) else "confused"
+        if answer_mode == "happy":
+            answer = neko_speak("ドキュメントから見つけたよ！「" + user_question + "」についてはこう書かれてるにゃ：\n\n" + st.session_state["doc_text"][:100] + "…", "happy")
         else:
-            st.error(f"不正解… 正解は {correct_num}. {choices[correct_num-1]} です。")
-            st.session_state.quiz_score.append(0)
-        st.info(f"解説: {explanation}")
-        # クイズデータ消去
-        st.session_state.last_quiz_data = None
-        st.session_state.last_quiz_selected = None
+            answer = neko_speak("ごめんにゃ、ちょっと分からないにゃ…別の聞き方をしてみてほしいにゃ。", "confused")
+
+    # 章・節などの出所抽出
+    source_info = chapter_and_section(st.session_state["doc_text"], answer)
+    if source_info:
+        answer += f"\n\n---\nこの情報はドキュメントの {source_info} から得られたものです。"
+    else:
+        answer += f"\n\n---\nこの情報の出所は明確ではありません。"
+
+    st.session_state["chat_history"].append(("cat", answer))
+    st.image(CAT_IMAGE_PATH, width=160)
+    st.markdown(f"<div style='background:#fff7e6;padding:10px;border-radius:10px'>{answer}</div>", unsafe_allow_html=True)
+
+    # 「知識系譜」可視化テキスト
+    flow_text = visualize_knowledge_flow(user_question, answer, source_info)
+    st.session_state["knowledge_flow"].append(flow_text)
+    st.markdown("<div style='font-size:16px;font-weight:bold;margin-top:20px;'>知識のつながり（系譜）</div>", unsafe_allow_html=True)
+    st.markdown(f"<pre style='background:#f8f8ff;border-radius:8px;padding:9px'>{flow_text}</pre>", unsafe_allow_html=True)
+
+if st.session_state["chat_history"]:
+    st.markdown("---")
+    st.subheader("これまでの猫とのやりとり")
+    for who, msg in st.session_state["chat_history"]:
+        if who == "user":
+            st.markdown(f"<div style='background:#e6f7ff;padding:8px;border-radius:8px'>🧑‍💻 {msg}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div style='background:#fff7e6;padding:8px;border-radius:8px'>🐱 {msg}</div>", unsafe_allow_html=True)
+
+if st.session_state["knowledge_flow"]:
+    st.markdown("---")
+    st.subheader("知識の系譜の履歴")
+    for flow in st.session_state["knowledge_flow"]:
+        st.markdown(f"<pre style='background:#f8f8ff;border-radius:8px;padding:9px'>{flow}</pre>", unsafe_allow_html=True)
+
+st.markdown("---")
+st.subheader("猫のクイズタイム！")
+
+def generate_strategy_quiz(goals):
+    correct_goal = random.choice(goals)
+    wrong_goals = random.sample([g for g in goals if g != correct_goal], 3)
+    options = wrong_goals + [correct_goal]
+    random.shuffle(options)
+    question = f"『{correct_goal}』はAI戦略2022の5つの戦略目標のうちどれにゃ？"
+    return {
+        "question": question,
+        "options": options,
+        "answer": correct_goal
+    }
+
+if st.button("クイズを出題してにゃ"):
+    quiz_data = generate_strategy_quiz(GOALS)
+    st.session_state["quiz"] = quiz_data
+    st.session_state["quiz_selected"] = None
+
+if "quiz" in st.session_state and st.session_state["quiz"]:
+    quiz_data = st.session_state["quiz"]
+    st.markdown(f"<div style='background:#e6f7ff;padding:8px;border-radius:8px'><b>問題:</b> {quiz_data['question']}</div>", unsafe_allow_html=True)
+    selected = st.selectbox("選択肢を選んでにゃ", quiz_data["options"], key="quiz_select")
+    if st.button("答え合わせするにゃ"):
+        st.session_state["quiz_selected"] = selected
+
+if "quiz_selected" in st.session_state and st.session_state["quiz_selected"]:
+    quiz_data = st.session_state["quiz"]
+    selected = st.session_state["quiz_selected"]
+    if os.path.exists(CAT_IMAGE_PATH):
+        st.image(CAT_IMAGE_PATH, width=160)
+    if selected == quiz_data["answer"]:
+        st.success(neko_speak("正解だにゃ！お見事にゃ！", "happy"))
+    else:
+        st.error(neko_speak(f"残念…正解は「{quiz_data['answer']}」だったにゃ。", "confused"))
+    st.info(neko_speak("AI戦略2022の5つの目標は「人材」「産業競争力」「技術体系」「国際」「差し迫った危機への対処」だにゃ。", "normal"))
+    st.session_state["quiz"] = None
+    st.session_state["quiz_selected"] = None
+
+st.markdown("---")
+st.markdown(
+    "<div style='text-align:center;font-size:13px;color:#888'>Powered by 猫キャラBot 🐾</div>",
+    unsafe_allow_html=True
+)
