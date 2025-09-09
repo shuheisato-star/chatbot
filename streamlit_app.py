@@ -9,17 +9,11 @@ try:
 except ImportError:
     SUPPORT_PDF = False
 
-# ★★ここから猫キャラクター画像表示★★
-# 画像ファイル名。cat_image2.png をこのファイルと同じ場所に置いてください！
-CAT_IMAGE_PATH = "cat_image2.png"
-st.image(CAT_IMAGE_PATH, width=200)  # 画像の大きさは200。好きな大きさに変えてもOK！
-
 st.title("💬 ドキュメント連携型 Chatbot (Gemini 2.5 Flash 日本語対応)")
 
 st.write(
     "ドキュメントをアップロードして、内容に関する質問ができます。"
     "また、要約・根拠表示・クイズ（選択式正誤問題）機能も利用できます。"
-    "さらに、質問への回答の出所や知識の系譜も明示します。"
 )
 
 api_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -61,8 +55,10 @@ def find_chapter_section(text, answer):
     """
     chapter_pat = r"(第[0-9一二三四五六七八九十]+章[「」『』\w\s]*)"
     section_pat = r"(第[0-9一二三四五六七八九十]+節[「」『』\w\s]*)"
+    # 回答から探す
     chapters = re.findall(chapter_pat, answer)
     sections = re.findall(section_pat, answer)
+    # なければ全文から探す
     if not chapters:
         chapters = re.findall(chapter_pat, text)
     if not sections:
@@ -88,7 +84,7 @@ def get_answer_and_highlight_with_source(text, question):
     response = model.generate_content(prompt)
     answer = response.candidates[0].content.parts[0].text
 
-    # 出所抽出
+    # 出所抽出（章・節）
     source_info = find_chapter_section(text, answer)
     if source_info and f"この情報はドキュメントの" not in answer:
         answer += f"\n\n---\nこの情報はドキュメントの{source_info}から得られたものです。"
