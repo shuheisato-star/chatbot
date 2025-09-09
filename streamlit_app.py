@@ -4,12 +4,18 @@ import google.generativeai as genai
 st.title("💬 Chatbot (Gemini 2.5 Flash 日本語対応)")
 st.write(
     "このチャットボットは Google Gemini 2.5 Flash モデルを利用し、日本語で会話します。"
-    "Google API Key が必要です。[取得はこちら](https://ai.google.dev/)。"
+    "Google API Key を .streamlit/secrets.toml に設定してください。[取得はこちら](https://ai.google.dev/)。"
 )
 
-api_key = st.text_input("Google API Key", type="password")
+# secrets.toml からAPIキーを取得
+api_key = st.secrets.get("GEMINI_API_KEY", "")
+
 if not api_key:
-    st.info("続行するには Google API Key を入力してください。", icon="🗝️")
+    st.info(
+        "続行するには .streamlit/secrets.toml に GEMINI_API_KEY を設定してください。\n"
+        "例:\n[GEMINI_API_KEY]\nGEMINI_API_KEY = \"your-api-key\"",
+        icon="🗝️"
+    )
 else:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
