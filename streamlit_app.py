@@ -1,6 +1,12 @@
 import streamlit as st
 import google.generativeai as genai
-import fitz  # PyMuPDF for PDF parsing
+
+# fitz(Pymupdf)が使えるか判定
+try:
+    import fitz
+    SUPPORT_PDF = True
+except ImportError:
+    SUPPORT_PDF = False
 
 st.title("💬 ドキュメント連携型 Chatbot (Gemini 2.5 Flash 日本語対応)")
 
@@ -22,7 +28,7 @@ genai.configure(api_key=api_key)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
 def extract_text(file):
-    if file.name.endswith(".pdf"):
+    if SUPPORT_PDF and file.name.endswith(".pdf"):
         doc = fitz.open(stream=file.read(), filetype="pdf")
         text = ""
         for page in doc:
@@ -56,19 +62,39 @@ def get_answer_and_highlight(text, question):
     answer = response.candidates[0].content.parts[0].text
     return answer
 
-def generate_quiz(text, quiz_type="穴埋め", prev_score=None):
+def generate_quiz_split(text, quiz_type="穴埋め", prev_score=None):
     quiz_prompt = f"""
     以下のドキュメントから{quiz_type}形式のクイズを1問、日本語で出題してください。
-    解答・解説もセットで出力してください。
+    必ず以下の形式で出力してください：
+
+    問題: <問題文>
+    正答: <正答>
+    解説: <解説>
+
+    ドキュメント:
+    {text}
     """
     if prev_score is not None:
         quiz_prompt += f"\nユーザーの正答率は{prev_score*100:.0f}%です。おすすめの関連セクションも1つ推薦してください。"
-    quiz_prompt += f"\nドキュメント:\n{text}"
     response = model.generate_content(quiz_prompt)
-    return response.candidates[0].content.parts[0].text
+    output = response.candidates[0].content.parts[0].text
+    # 問題・正答・解説に分割
+    q, a, e = "", "", ""
+    for line in output.splitlines():
+        if line.startswith("問題:"):
+            q = line.replace("問題:", "").strip()
+        elif line.startswith("正答:"):
+            a = line.replace("正答:", "").strip()
+        elif line.startswith("解説:"):
+            e = line.replace("解説:", "").strip()
+    return q, a, e
 
 # ドキュメントアップロード
-uploaded_file = st.file_uploader("ドキュメントをアップロード（PDF/TXT）", type=["pdf", "txt"])
+file_types = ["txt"]
+if SUPPORT_PDF:
+    file_types.insert(0, "pdf")
+
+uploaded_file = st.file_uploader(f"ドキュメントをアップロード（{'/'.join(file_types).upper()}）", type=file_types)
 if uploaded_file:
     doc_text = extract_text(uploaded_file)
     st.session_state["doc_text"] = doc_text
@@ -76,7 +102,7 @@ if uploaded_file:
     st.subheader("ドキュメント要約 ＆ ハイライト")
     st.markdown(summary_highlights)
 else:
-    st.info("まずドキュメントをアップロードしてください。")
+    st.info(f"まずドキュメントをアップロードしてください。対応形式：{'/'.join(file_types).upper()}")
     st.stop()
 
 # チャット履歴初期化
@@ -89,6 +115,10 @@ if "quiz_score" not in st.session_state:
     st.session_state.quiz_score = []
 if "last_quiz" not in st.session_state:
     st.session_state.last_quiz = None
+if "last_quiz_answer" not in st.session_state:
+    st.session_state.last_quiz_answer = None
+if "last_quiz_explain" not in st.session_state:
+    st.session_state.last_quiz_explain = None
 
 # これまでのメッセージ表示
 for message in st.session_state.messages:
@@ -114,28 +144,31 @@ with st.expander("ドキュメントでクイズに挑戦！"):
     selected_quiz = st.selectbox("クイズ形式を選択", quiz_types)
     if st.button("クイズを出題"):
         prev_score = sum(st.session_state.quiz_score)/max(len(st.session_state.quiz_score),1) if st.session_state.quiz_score else None
-        quiz_text = generate_quiz(st.session_state["doc_text"], selected_quiz, prev_score)
-        st.session_state.last_quiz = quiz_text
-        st.markdown(quiz_text)
+        q, a, e = generate_quiz_split(st.session_state["doc_text"], selected_quiz, prev_score)
+        st.session_state.last_quiz = q
+        st.session_state.last_quiz_answer = a
+        st.session_state.last_quiz_explain = e
+        st.markdown(f"**問題：** {q}")
+    # 問題が表示されているなら回答欄を表示
     if st.session_state.last_quiz:
         user_answer = st.text_input("あなたの答え（自分で答えてみてください）")
         if user_answer and st.button("答え合わせ"):
-            # Geminiに正誤判定・解説をお願いする
+            # 正誤判定
             check_prompt = f"""
-            以下はクイズの内容とユーザーの回答です。正誤判定と簡単な解説を日本語でしてください。
+            以下はクイズの問題・正答・解説・ユーザー回答です。正誤判定と「正解/不正解」表示＋解説を日本語で出してください。
 
-            クイズ内容:
-            {st.session_state.last_quiz}
-
-            ユーザー回答:
-            {user_answer}
+            問題: {st.session_state.last_quiz}
+            正答: {st.session_state.last_quiz_answer}
+            解説: {st.session_state.last_quiz_explain}
+            ユーザー回答: {user_answer}
             """
             check_response = model.generate_content(check_prompt)
             result = check_response.candidates[0].content.parts[0].text
             st.markdown(result)
-            # 簡易:「正解」「不正解」判定でスコア追加
             if "正解" in result:
                 st.session_state.quiz_score.append(1)
             else:
                 st.session_state.quiz_score.append(0)
             st.session_state.last_quiz = None
+            st.session_state.last_quiz_answer = None
+            st.session_state.last_quiz_explain = None
