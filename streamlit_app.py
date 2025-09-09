@@ -1,5 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
+import re
 
 # fitz(Pymupdf)が使えるか判定
 try:
@@ -47,10 +48,32 @@ def get_summary_and_highlights(text):
     response = model.generate_content(prompt)
     return response.candidates[0].content.parts[0].text
 
-def get_answer_and_highlight(text, question):
+def find_chapter_section(text, answer):
+    """
+    回答や根拠から章・節名を抽出する。
+    例: 第3章「市場動向」第5節 など
+    """
+    chapter_pat = r"(第[0-9一二三四五六七八九十]+章[「」『』\w\s]*)"
+    section_pat = r"(第[0-9一二三四五六七八九十]+節[「」『』\w\s]*)"
+    # 回答から探す
+    chapters = re.findall(chapter_pat, answer)
+    sections = re.findall(section_pat, answer)
+    # なければ全文から探す
+    if not chapters:
+        chapters = re.findall(chapter_pat, text)
+    if not sections:
+        sections = re.findall(section_pat, text)
+    chapter = chapters[0] if chapters else ""
+    section = sections[0] if sections else ""
+    if chapter or section:
+        return f"{chapter}{(' ' + section) if section else ''}"
+    return None
+
+def get_answer_and_highlight_with_source(text, question):
     prompt = f"""
     以下のドキュメント内容に基づき、質問に日本語で答えてください。
     また、回答の根拠となる文（最大3つ）をドキュメントから抜き出し「根拠」として明示してください。
+    さらに、根拠が存在する章・節名（例：第3章「市場動向」第5節）を回答の最後に「この情報はドキュメントの〇〇から得られたものです。」という形式で必ず記載してください。
 
     ドキュメント:
     {text}
@@ -60,7 +83,26 @@ def get_answer_and_highlight(text, question):
     """
     response = model.generate_content(prompt)
     answer = response.candidates[0].content.parts[0].text
-    return answer
+
+    # 出所抽出（章・節）
+    source_info = find_chapter_section(text, answer)
+    if source_info and f"この情報はドキュメントの" not in answer:
+        answer += f"\n\n---\nこの情報はドキュメントの{source_info}から得られたものです。"
+    elif not source_info and f"この情報はドキュメントの" not in answer:
+        answer += f"\n\n---\nこの情報の出所は明確ではありません。"
+
+    return answer, source_info
+
+def visualize_knowledge_flow(question, answer, source_info):
+    arrow = "→"
+    blocks = [
+        f"【質問】\n{question}",
+        arrow,
+        f"【回答】\n{answer.split('---')[0].strip()}",
+        arrow,
+        f"【出所】\n{source_info if source_info else '該当箇所不明'}"
+    ]
+    return "\n\n".join(blocks)
 
 def generate_choice_quiz(text):
     prompt = f"""
@@ -117,11 +159,13 @@ else:
     st.info(f"まずドキュメントをアップロードしてください。対応形式：{'/'.join(file_types).upper()}")
     st.stop()
 
-# チャット履歴初期化
+# チャット履歴・知識系譜初期化
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "user", "content": "今後の返答はすべて日本語でお願いします。"}
     ]
+if "knowledge_flow" not in st.session_state:
+    st.session_state.knowledge_flow = []
 if "quiz_score" not in st.session_state:
     st.session_state.quiz_score = []
 if "last_quiz_data" not in st.session_state:
@@ -142,10 +186,22 @@ with st.expander("ドキュメント内容に質問する"):
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        response_text = get_answer_and_highlight(st.session_state["doc_text"], prompt_with_lang)
+        response_text, source_info = get_answer_and_highlight_with_source(st.session_state["doc_text"], prompt_with_lang)
         with st.chat_message("assistant"):
             st.markdown(response_text)
         st.session_state.messages.append({"role": "assistant", "content": response_text})
+
+        # 知識の「系譜」可視化
+        flow_text = visualize_knowledge_flow(prompt, response_text, source_info)
+        st.session_state.knowledge_flow.append(flow_text)
+        st.markdown("#### 知識のつながり（系譜）")
+        st.markdown(f"<pre style='background:#f8f8ff;border-radius:8px;padding:9px'>{flow_text}</pre>", unsafe_allow_html=True)
+
+# 「知識の系譜」履歴表示
+if st.session_state.knowledge_flow:
+    st.markdown("#### これまでの知識の系譜履歴")
+    for flow in st.session_state.knowledge_flow:
+        st.markdown(f"<pre style='background:#f8f8ff;border-radius:8px;padding:9px'>{flow}</pre>", unsafe_allow_html=True)
 
 # 正誤問題クイズ
 with st.expander("ドキュメントで正誤問題クイズに挑戦！"):
