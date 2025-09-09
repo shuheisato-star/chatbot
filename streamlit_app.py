@@ -33,19 +33,11 @@ else:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Gemini API用の履歴形式に変換
-        history = []
-        for m in st.session_state.messages:
-            if m["role"] == "user":
-                history.append({"role": "user", "parts": [m["content"]]})
-            else:
-                history.append({"role": "model", "parts": [m["content"]]})
-
-        # Gemini 2.5 Flash へ問い合わせ（stream=Falseで通常返答）
-        response_stream = model.generate_content(history, stream=False)
+        # Gemini 2.5 Flash へ問い合わせ（str型で渡す）
+        response = model.generate_content(prompt_with_lang)
 
         # 返答本文のみ抽出して表示
-        response_text = response_stream.result.candidates[0].content.parts[0].text
+        response_text = response.candidates[0].content.parts[0].text
         with st.chat_message("assistant"):
             st.markdown(response_text)
         st.session_state.messages.append({"role": "assistant", "content": response_text})
