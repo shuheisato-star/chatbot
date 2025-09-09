@@ -12,7 +12,7 @@ st.title("💬 ドキュメント連携型 Chatbot (Gemini 2.5 Flash 日本語�
 
 st.write(
     "ドキュメントをアップロードして、内容に関する質問ができます。"
-    "また、要約・根拠表示・クイズ機能も利用できます。"
+    "また、要約・根拠表示・クイズ（選択式正誤問題）機能も利用できます。"
 )
 
 api_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -62,32 +62,44 @@ def get_answer_and_highlight(text, question):
     answer = response.candidates[0].content.parts[0].text
     return answer
 
-def generate_quiz_split(text, quiz_type="穴埋め", prev_score=None):
-    quiz_prompt = f"""
-    以下のドキュメントから{quiz_type}形式のクイズを1問、日本語で出題してください。
+def generate_choice_quiz(text):
+    prompt = f"""
+    以下のドキュメントから「正誤問題（選択肢付き）」を1問、日本語で作成してください。
     必ず以下の形式で出力してください：
 
     問題: <問題文>
-    正答: <正答>
+    選択肢:
+    1. <選択肢1>
+    2. <選択肢2>
+    3. <選択肢3>
+    4. <選択肢4>
+    正答番号: <正答の番号>（例：2）
     解説: <解説>
 
     ドキュメント:
     {text}
     """
-    if prev_score is not None:
-        quiz_prompt += f"\nユーザーの正答率は{prev_score*100:.0f}%です。おすすめの関連セクションも1つ推薦してください。"
-    response = model.generate_content(quiz_prompt)
+    response = model.generate_content(prompt)
     output = response.candidates[0].content.parts[0].text
-    # 問題・正答・解説に分割
-    q, a, e = "", "", ""
+
+    # 分割処理
+    question, choices, correct_num, explanation = "", [], None, ""
     for line in output.splitlines():
+        line = line.strip()
         if line.startswith("問題:"):
-            q = line.replace("問題:", "").strip()
-        elif line.startswith("正答:"):
-            a = line.replace("正答:", "").strip()
+            question = line.replace("問題:", "").strip()
+        elif line.startswith("選択肢:"):
+            continue
+        elif any(line.startswith(f"{i}.") for i in range(1, 10)):
+            choices.append(line[line.find(".")+1:].strip())
+        elif line.startswith("正答番号:"):
+            try:
+                correct_num = int(line.replace("正答番号:", "").strip())
+            except ValueError:
+                correct_num = None
         elif line.startswith("解説:"):
-            e = line.replace("解説:", "").strip()
-    return q, a, e
+            explanation = line.replace("解説:", "").strip()
+    return question, choices, correct_num, explanation
 
 # ドキュメントアップロード
 file_types = ["txt"]
@@ -110,15 +122,12 @@ if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "user", "content": "今後の返答はすべて日本語でお願いします。"}
     ]
-
 if "quiz_score" not in st.session_state:
     st.session_state.quiz_score = []
-if "last_quiz" not in st.session_state:
-    st.session_state.last_quiz = None
-if "last_quiz_answer" not in st.session_state:
-    st.session_state.last_quiz_answer = None
-if "last_quiz_explain" not in st.session_state:
-    st.session_state.last_quiz_explain = None
+if "last_quiz_data" not in st.session_state:
+    st.session_state.last_quiz_data = None
+if "last_quiz_selected" not in st.session_state:
+    st.session_state.last_quiz_selected = None
 
 # これまでのメッセージ表示
 for message in st.session_state.messages:
@@ -138,37 +147,31 @@ with st.expander("ドキュメント内容に質問する"):
             st.markdown(response_text)
         st.session_state.messages.append({"role": "assistant", "content": response_text})
 
-# クイズ機能
-with st.expander("ドキュメントでクイズに挑戦！"):
-    quiz_types = ["穴埋め", "正誤問題", "応用問題"]
-    selected_quiz = st.selectbox("クイズ形式を選択", quiz_types)
+# 正誤問題クイズ
+with st.expander("ドキュメントで正誤問題クイズに挑戦！"):
     if st.button("クイズを出題"):
-        prev_score = sum(st.session_state.quiz_score)/max(len(st.session_state.quiz_score),1) if st.session_state.quiz_score else None
-        q, a, e = generate_quiz_split(st.session_state["doc_text"], selected_quiz, prev_score)
-        st.session_state.last_quiz = q
-        st.session_state.last_quiz_answer = a
-        st.session_state.last_quiz_explain = e
-        st.markdown(f"**問題：** {q}")
-    # 問題が表示されているなら回答欄を表示
-    if st.session_state.last_quiz:
-        user_answer = st.text_input("あなたの答え（自分で答えてみてください）")
-        if user_answer and st.button("答え合わせ"):
-            # 正誤判定
-            check_prompt = f"""
-            以下はクイズの問題・正答・解説・ユーザー回答です。正誤判定と「正解/不正解」表示＋解説を日本語で出してください。
+        question, choices, correct_num, explanation = generate_choice_quiz(st.session_state["doc_text"])
+        st.session_state.last_quiz_data = (question, choices, correct_num, explanation)
+        st.session_state.last_quiz_selected = None
 
-            問題: {st.session_state.last_quiz}
-            正答: {st.session_state.last_quiz_answer}
-            解説: {st.session_state.last_quiz_explain}
-            ユーザー回答: {user_answer}
-            """
-            check_response = model.generate_content(check_prompt)
-            result = check_response.candidates[0].content.parts[0].text
-            st.markdown(result)
-            if "正解" in result:
-                st.session_state.quiz_score.append(1)
-            else:
-                st.session_state.quiz_score.append(0)
-            st.session_state.last_quiz = None
-            st.session_state.last_quiz_answer = None
-            st.session_state.last_quiz_explain = None
+    if st.session_state.last_quiz_data:
+        question, choices, correct_num, explanation = st.session_state.last_quiz_data
+        st.markdown(f"**問題：** {question}")
+        selected_idx = st.selectbox("選択肢を選んでください", options=range(1, len(choices)+1), format_func=lambda x: f"{x}. {choices[x-1]}")
+        if st.button("答え合わせ"):
+            st.session_state.last_quiz_selected = selected_idx
+
+    # 回答後の表示
+    if st.session_state.last_quiz_selected:
+        selected_idx = st.session_state.last_quiz_selected
+        question, choices, correct_num, explanation = st.session_state.last_quiz_data
+        if selected_idx == correct_num:
+            st.success(f"正解！ ({selected_idx}. {choices[selected_idx-1]})")
+            st.session_state.quiz_score.append(1)
+        else:
+            st.error(f"不正解… 正解は {correct_num}. {choices[correct_num-1]} です。")
+            st.session_state.quiz_score.append(0)
+        st.info(f"解説: {explanation}")
+        # クイズデータ消去
+        st.session_state.last_quiz_data = None
+        st.session_state.last_quiz_selected = None
